@@ -53,13 +53,3 @@ enum HandshakeType {
 
     int getMagicNumber() { return number; }
 };
-
-enum CompressionMethod {
-    no(0), yes(255);
-    private final int number;
-    CompressionMethod(int number) {
-        this.number = number;
-    }
-
-    int getMagicNumber() { return number; }
-};

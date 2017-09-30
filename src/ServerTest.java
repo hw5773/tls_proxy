@@ -1,22 +1,35 @@
+import com.sun.xml.internal.ws.policy.privateutil.PolicyUtils;
+
+import javax.crypto.*;
+import javax.crypto.spec.SecretKeySpec;
+import javax.xml.bind.DatatypeConverter;
 import java.net.*;
 import java.io.*;
 import java.nio.ByteBuffer;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import java.security.*;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.Date;
 import java.text.SimpleDateFormat;
 
 public class ServerTest {
 	private final static char[] hexArray = "0123456789ABCDEF".toCharArray();
 	private final static int RANDOM_SIZE = 32;
+	private final static int CHANGE_CIPHER_SPEC_LENGTH = 6;
+	private final static int MASTER_SECRET_LENGTH = 48;
+	private static byte major = 0x03;
+	private static byte minor = 0x03;
 	private static SecurityParameters sp;
 	private static MessageDigest md;
-	private static String certFile = "C:\\Users\\HWY\\Documents\\intelliJ\\tls_handshake\\src\\alice_cert.pem";
+	private static boolean ccsFlag = false;
+	private static String certFile = "D:\\IntelliJ\\tls_proxy\\src\\carol_cert.crt";
+	private static String keyFile = "D:\\IntelliJ\\tls_proxy\\src\\carol_priv.key";
+	private static String caFile = "D:\\IntelliJ\\tls_proxy\\src\\ca_carol.pem";
 
 	public static void main(String[] args) throws IOException {
 		sp = new SecurityParameters();
 		ServerSocket serverSocket = null;
-		int port = 5555;
+		int port = 443;
 
 		try {
 			serverSocket = new ServerSocket(port);
@@ -28,8 +41,6 @@ public class ServerTest {
 
 			OutputStream os = socket.getOutputStream();
 			InputStream is = socket.getInputStream();
-
-			ByteArrayOutputStream buffer = new ByteArrayOutputStream();
 
 			int nRead, nWrite;
 			byte[] data = new byte[16384];
@@ -44,13 +55,30 @@ public class ServerTest {
 				byte[] serverHello = makeRecord(HandshakeType.server_hello);
 				os.write(serverHello);
 				byte[] certificate = makeRecord(HandshakeType.certificate);
-				bytesToHex(certificate, certificate.length);
 				os.write(certificate);
-				byte[] serverHelloDone = makeRecord(HandshakeType.server_hello_done);
-				//os.write(serverHelloDone);
+                byte[] serverHelloDone = makeRecord(HandshakeType.server_hello_done);
+				os.write(serverHelloDone);
 
-				//nRead = is.read(data);
-				//System.out.println("nRead: " + nRead);
+				nRead = is.read(data);
+				System.out.println("nRead: " + nRead);
+
+				if (nRead <0)
+					break;
+				byte[] clientKeyExchange = toBytes(data, nRead);
+				parseRecord(clientKeyExchange);
+
+				nRead = is.read(data);
+				System.out.println("nRead: " + nRead);
+
+				if (nRead < 0)
+					break;
+				byte[] changeCipherSpec = toBytes(data, CHANGE_CIPHER_SPEC_LENGTH);
+				parseRecord(changeCipherSpec);
+				byte[] clientFinished = new byte[nRead - CHANGE_CIPHER_SPEC_LENGTH];
+				System.arraycopy(data, CHANGE_CIPHER_SPEC_LENGTH, clientFinished, 0, nRead - CHANGE_CIPHER_SPEC_LENGTH);
+				parseRecord(clientFinished);
+
+				while(true) {}
 			}
 
 		} catch (Exception e) {
@@ -80,7 +108,7 @@ public class ServerTest {
 				System.out.println((char)hexChars[i]);
 			}
 
-			if (i % 20 == 18)
+			if (i % 16 == 14)
 				System.out.println();
 		}
 	}
@@ -90,7 +118,7 @@ public class ServerTest {
 		return f.format(new Date());
 	}
 
-	private static byte[] makeRecord(HandshakeType type) throws NoSuchAlgorithmException {
+	private static byte[] makeRecord(HandshakeType type) throws NoSuchAlgorithmException, IOException {
 		System.out.println("[FUNC] makeRecord");
 		ByteBuffer record = null;
 		byte[] content = null;
@@ -110,44 +138,24 @@ public class ServerTest {
 				break;
 			case server_hello_done:
 				content = makeServerHelloDone();
-				System.out.println("ServerHelloDone");
+				System.out.println("ServerHelloDone: " + content.length);
 				prepared = true;
 				break;
 		}
 
 		if (prepared) {
-			int length;
+			int length = content.length;
 
-			if (content == null)
-				length = 0;
-			else
-				length = content.length;
-
-			record = ByteBuffer.allocate(9 + length);
+			record = ByteBuffer.allocate(5 + length);
 			record.put((byte) (ContentType.handshake.getMagicNumber()));
-			record.put((byte) 0x03);
-			record.put((byte) 0x03);
-			record.putShort((short) (length + 4));
-
-			switch (type) {
-				case server_hello:
-					record.put((byte) (HandshakeType.server_hello.getMagicNumber()));
-					break;
-				case certificate:
-					record.put((byte) (HandshakeType.certificate.getMagicNumber()));
-					break;
-				case server_hello_done:
-					record.put((byte) (HandshakeType.server_hello_done.getMagicNumber()));
-					break;
-			}
-
-			record.put(lengthToBytes(length));
-			if (content != null)
-				record.put(content);
+			record.put(major);
+			record.put(minor);
+			record.putShort((short)length);
+			record.put(content);
 		}
 
 		if (prepared)
-			md.update(record.array());
+			md.update(content);
 
 		return record.array();
 	}
@@ -161,11 +169,13 @@ public class ServerTest {
 		return ret;
 	}
 
-	private static void parseRecord(byte[] record) throws NoSuchAlgorithmException {
+	private static void parseRecord(byte[] record) throws NoSuchAlgorithmException, IOException {
 		System.out.println("[FUNC] parseRecord");
 		byte contentType = record[0];
-		if (contentType == 0x16)
+		if (contentType == ContentType.handshake.getMagicNumber())
 			System.out.println("Message: Handshake");
+		else if (contentType == ContentType.change_cipher_spec.getMagicNumber())
+			System.out.println("Message: Change Cipher Spec");
 
 		if (record[1] == 0x03 && record[2] == 0x03)
 			System.out.println("Version: TLS 1.2");
@@ -177,11 +187,27 @@ public class ServerTest {
 		byte[] content = new byte[length];
 		System.arraycopy(record, 5, content, 0, length);
 
-		if (contentType == 0x16)
+		if (ccsFlag == true)
+			content = decryptMessage(content);
+
+		if (contentType == ContentType.handshake.getMagicNumber()) {
+			System.out.println("Content Type: Handshake");
 			parseHandshake(content);
+		} else if (contentType == ContentType.change_cipher_spec.getMagicNumber()) {
+			System.out.println("Content Type: Change Cipher Spec");
+			parseChangeCipherSpec(content);
+		}
+
+		md.update(content);
 	}
 
-	private static void parseHandshake(byte[] content) throws NoSuchAlgorithmException {
+	// TODO: Need to implement this.
+	private static byte[] decryptMessage(byte[] content) {
+		byte[] key;
+		return null;
+	}
+
+	private static void parseHandshake(byte[] content) throws NoSuchAlgorithmException, IOException {
 		System.out.println("[FUNC] parseHandshake");
 		byte handshakeType = content[0];
 		int length = ((content[1] & 0xFF) << 16) | ((content[2] & 0xFF) << 8) | (content[3] & 0xFF);
@@ -189,30 +215,48 @@ public class ServerTest {
 		byte[] body = new byte[length];
 		System.arraycopy(content, 4, body, 0, length);
 
-		if (handshakeType == 0x1) {
+		if (handshakeType == HandshakeType.client_hello.getMagicNumber()) {
 			System.out.println("Handshake Type: Client Hello");
 			parseClientHello(body);
+		} else if (handshakeType == HandshakeType.client_key_exchange.getMagicNumber()) {
+			System.out.println("Handshake Type: Client Key Exchange");
+			parseClientKeyExchange(body);
+		} else if (handshakeType == HandshakeType.finished.getMagicNumber()) {
+			System.out.println("Handshake Type: Client Finished");
+			parseClientFinished(body);
 		}
+	}
+
+	private static void checkVersion(int version) {
+		switch (version) {
+			case 0x0301:
+				System.out.println("Client Version: TLS 1.0");
+				break;
+			case 0x0302:
+				System.out.println("Client Version: TLS 1.1");
+				break;
+			case 0x0303:
+				System.out.println("Client Version: TLS 1.2");
+				break;
+			default:
+				System.out.println("Client Version: No Support Version");
+				System.exit(-1);
+		}
+	}
+
+	private static void parseChangeCipherSpec(byte[] ccs) {
+		System.out.println("[FUNC] parseChangeCipherSpec");
+		int offset = 0;
+		byte data = ccs[offset];
+		System.out.println("CCS: " + data);
+		ccsFlag = true;
 	}
 
 	private static void parseClientHello(byte[] clientHello) throws NoSuchAlgorithmException {
 		int offset = 0;
 		int version = ((clientHello[offset] & 0xFF) << 8) | (clientHello[offset+1] & 0xFF);
 		offset += 2;
-		switch (version) {
-		case 0x0301:
-			System.out.println("Client Version: TLS 1.0");
-			break;
-		case 0x0302:
-			System.out.println("Client Version: TLS 1.1");
-			break;
-		case 0x0303:
-			System.out.println("Client Version: TLS 1.2");
-			break;
-		default:
-			System.out.println("Client Version: No Support Version");
-			System.exit(-1);
-		}
+		checkVersion(version);
 
 		byte[] random = new byte[RANDOM_SIZE];
 		System.arraycopy(clientHello, offset, random, 0, RANDOM_SIZE);
@@ -232,9 +276,18 @@ public class ServerTest {
 		int cipher;
 		for (int i=0; i<bytesOfCiphers; i+=2) {
 			cipher = ((clientHello[offset+i] & 0xff) << 8) | (clientHello[offset+i+1] & 0xff);
-			if (cipher == 0x003D) {
+			if (cipher == 0x003C) {
+				System.out.println("TLS_RSA_WITH_AES_128_CBC_SHA256");
+				sp.getCipherSuite().setCiphersuite((short)cipher);
+				sp.setBulkCipiherAlgorithm(BulkCipiherAlgorithm.aes128);
+				sp.setMacAlgorithm(MACAlgorithm.sha256);
+				md = MessageDigest.getInstance("SHA-256");
+				md.update(clientHello);
+			} else if (cipher == 0x003D) {
 				System.out.println("TLS_RSA_WITH_AES_256_CBC_SHA256");
 				sp.getCipherSuite().setCiphersuite((short)cipher);
+				sp.setBulkCipiherAlgorithm(BulkCipiherAlgorithm.aes256);
+				sp.setMacAlgorithm(MACAlgorithm.sha256);
 				md = MessageDigest.getInstance("SHA-256");
 				md.update(clientHello);
 			}
@@ -252,12 +305,83 @@ public class ServerTest {
 		offset += bytesOfCompression;
 	}
 
-	private static byte[] makeServerHello() throws NoSuchAlgorithmException {
-		ServerHello serverHello = new ServerHello();
-		serverHello.getVersion().setMajor((byte)0x03);
-		serverHello.getVersion().setMinor((byte)0x03);
-		serverHello.getCipherSuite().setCiphersuite(sp.getCipherSuite().getCiphersuite());
+	private static void parseClientKeyExchange(byte[] cke) throws NoSuchAlgorithmException, IOException {
+		System.out.println("[FUNC] parseClientKeyExchange");
+		System.out.println("Length of Client Key Exchange: " + cke.length);
+		int len = ((cke[0] & 0xff) << 8) | (cke[1] & 0xff);
+		System.out.println("Length of Encrypted Premaster Secret: " + len);
+		byte[] encryptedPremasterSecret = new byte[len];
+		System.arraycopy(cke, 2, encryptedPremasterSecret, 0, len);
 
+		byte[] ret = {0};
+		try {
+			BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(keyFile)));
+			StringBuilder builder = new StringBuilder();
+			boolean inKey = false;
+
+			for (String line = br.readLine(); line != null; line = br.readLine()) {
+				if (!inKey) {
+					if (line.startsWith("-----BEGIN") && line.endsWith(" PRIVATE KEY-----")) {
+						inKey = true;
+					}
+					continue;
+				} else {
+					if (line.startsWith("-----END") && line.endsWith(" PRIVATE KEY-----")) {
+						inKey = false;
+						break;
+					}
+					builder.append(line);
+				}
+			}
+			byte[] privKeyBytes = DatatypeConverter.parseBase64Binary(builder.toString());
+			PKCS8EncodedKeySpec ks = new PKCS8EncodedKeySpec(privKeyBytes);
+			KeyFactory keyFactory = KeyFactory.getInstance("RSA");
+			PrivateKey privKey = keyFactory.generatePrivate(ks);
+			System.out.println("Algorithm: " + privKey.getAlgorithm());
+			Cipher decrypt = Cipher.getInstance("RSA");
+			decrypt.init(Cipher.DECRYPT_MODE, privKey);
+			ret = decrypt.doFinal(encryptedPremasterSecret);
+		} catch (InvalidKeySpecException e) {
+			System.out.println("Invalid Key Spec Exception");
+			e.printStackTrace();
+		} catch (IOException e) {
+			e.printStackTrace();
+		} catch (NoSuchPaddingException e) {
+			e.printStackTrace();
+		} catch (InvalidKeyException e) {
+			e.printStackTrace();
+		} catch (BadPaddingException e) {
+			e.printStackTrace();
+		} catch (IllegalBlockSizeException e) {
+			e.printStackTrace();
+		}
+
+		System.out.println("----- PreMaster Secret -----");
+		bytesToHex(ret, ret.length);
+		sp.setMasterSecret(generateMasterSecret(ret));
+
+		System.out.println("----- Client Nonce -----");
+		bytesToHex(sp.getClientRandom(), sp.getClientRandom().length);
+
+		System.out.println("----- Server Nonce -----");
+		bytesToHex(sp.getServerRandom(), sp.getServerRandom().length);
+
+		System.out.println("----- Master Secret -----");
+		bytesToHex(sp.getMasterSecret(),sp.getMasterSecret().length);
+
+
+	}
+
+	private static void parseClientFinished(byte[] finished) {
+		System.out.println("[FUNC] parseClientFinished");
+	}
+
+	private static byte[] makeServerHello() throws NoSuchAlgorithmException, IOException {
+		ServerHello serverHello = new ServerHello();
+		serverHello.getVersion().setMajor((byte)major);
+		serverHello.getVersion().setMinor((byte)minor);
+		serverHello.getCipherSuite().setCiphersuite(sp.getCipherSuite().getCiphersuite());
+		sp.setServerRandom(serverHello.getRandom().getRandom());
 		return serverHello.getBytes();
 	}
 
@@ -269,6 +393,90 @@ public class ServerTest {
 	}
 
 	private static byte[] makeServerHelloDone() {
+		int length = 4;
+		ByteBuffer ret = ByteBuffer.allocate(length);
+		ret.put((byte)HandshakeType.server_hello_done.getMagicNumber());
+		ret.put(CommonFunc.lengthToBytes(0));
+		return ret.array();
+	}
+
+	private static byte[] generateMasterSecret(byte[] pms) throws IOException {
+		System.out.println("[FUNC] generateMasterSecret");
+		ByteArrayOutputStream random = new ByteArrayOutputStream();
+		random.write(sp.getClientRandom());
+		random.write(sp.getServerRandom());
+		return prf(pms, "master secret", random.toByteArray());
+	}
+
+	private static byte[] prf(byte[] secret, String label, byte[] seed) throws IOException {
+		System.out.println("[FUNC] prf");
+		int bytes = 0;
+
+		if (label.equalsIgnoreCase("master secret")) {
+			bytes = MASTER_SECRET_LENGTH;
+		} else if (label.equalsIgnoreCase("key expansion")) {
+			bytes = 2 * sp.getEncKeyLength() + 2 * sp.getMacKeyLength() + 2 * sp.getFixedIVLength();
+		}
+
+		System.out.println("Bytes is set to " + bytes);
+
+		ByteArrayOutputStream s = new ByteArrayOutputStream();
+		s.write(label.getBytes());
+		s.write(seed);
+		return pHash(secret, s.toByteArray(), bytes);
+	}
+
+	private static byte[] pHash(byte[] secret, byte[] seed, int bytes) throws IOException {
+		System.out.println("[Func] pHash");
+		ByteArrayOutputStream r = new ByteArrayOutputStream();
+		byte[] ret = new byte[bytes];
+		int num = bytes/(sp.getMacLength());
+		if ((bytes % sp.getMacLength()) > 0)
+			num += 1;
+
+		int n = 0;
+		byte[] a = seed;
+
+		for (int i=0; i<num; i++) {
+			ByteArrayOutputStream s = new ByteArrayOutputStream();
+			a = hmacHash(secret, a);
+			s.write(a);
+			s.write(seed);
+			r.write(hmacHash(secret, s.toByteArray()));
+		}
+
+		System.arraycopy(r.toByteArray(), 0, ret, 0, bytes);
+
+		return ret;
+	}
+
+	private static byte[] hmacHash(byte[] secret, byte[] value) {
+		System.out.println("[Func] hmacHash");
+		try {
+			SecretKeySpec ks;
+			switch (sp.getMacAlgorithm()) {
+				case md5:
+					Mac hmacMD5 = Mac.getInstance("HmacMD5");
+					ks = new SecretKeySpec(secret, "HmacMD5");
+					hmacMD5.init(ks);
+					return hmacMD5.doFinal(value);
+				case sha1:
+					Mac hmacSHA1 = Mac.getInstance("HmacSHA1");
+					ks = new SecretKeySpec(secret, "HmacSHA1");
+					hmacSHA1.init(ks);
+					return hmacSHA1.doFinal(value);
+				case sha256:
+					Mac hmacSHA256 = Mac.getInstance("HmacSHA256");
+					ks = new SecretKeySpec(secret, "HmacSHA256");
+					hmacSHA256.init(ks);
+					return hmacSHA256.doFinal(value);
+			}
+		} catch (NoSuchAlgorithmException e) {
+			e.printStackTrace();
+		} catch (InvalidKeyException e) {
+			e.printStackTrace();
+		}
+
 		return null;
 	}
 }

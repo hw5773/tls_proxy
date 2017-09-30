@@ -1,8 +1,7 @@
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.IOException;
+import java.io.*;
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.cert.CertificateEncodingException;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
@@ -39,19 +38,13 @@ public class Certificate {
         System.out.println("length: " + length);
     }
 
-    private static byte[] lengthToBytes(int length) {
-        byte[] ret = new byte[3];
-        ret[0] = (byte) ((length & 0x00ff0000) >> 16);
-        ret[1] = (byte) ((length & 0x0000ff00) >> 8);
-        ret[2] = (byte) (length & 0x000000ff);
-
-        return ret;
-    }
-
     public byte[] getBytes() {
-        ByteBuffer ret = ByteBuffer.allocate(length + 3);
-        ret.put(lengthToBytes(length));
+        ByteBuffer ret = ByteBuffer.allocate(length + 10);
+        ret.put((byte)HandshakeType.certificate.getMagicNumber());
+        ret.put(CommonFunc.lengthToBytes(length+6));
+        ret.put(CommonFunc.lengthToBytes(length));
         try {
+            ret.put(CommonFunc.lengthToBytes(length));
             ret.put(cert.getEncoded());
         } catch (CertificateEncodingException e) {
             e.printStackTrace();

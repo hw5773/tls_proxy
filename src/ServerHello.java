@@ -1,5 +1,6 @@
 import com.sun.corba.se.impl.encoding.BufferManagerWriteGrow;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.security.NoSuchAlgorithmException;
 
@@ -40,8 +41,10 @@ public class ServerHello {
         return compressionMethod;
     }
 
-    public byte[] getBytes() {
-        ByteBuffer serverHello = ByteBuffer.allocate(38);
+    public byte[] getBytes() throws IOException {
+        ByteBuffer serverHello = ByteBuffer.allocate(42);
+        serverHello.put((byte)HandshakeType.server_hello.getMagicNumber());
+        serverHello.put(CommonFunc.lengthToBytes(38));
         serverHello.put(version.getMajor());
         serverHello.put(version.getMinor());
         serverHello.put(random.getRandom());
